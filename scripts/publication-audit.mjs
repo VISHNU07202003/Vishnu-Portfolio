@@ -42,11 +42,25 @@ export function auditPublication(base = root, strict = false) {
   const path = relative(base, full).replaceAll('\\', '/');
   if (!allowed.has(path)) problems.push(`Extra file in publication copy: ${path}`);
  }
- let git = 'not initialized; candidate audit only';
+ let git = 'metadata absent; filesystem and manifest checks active';
  if (existsSync(resolve(base, '.git'))) {
-  const result = spawnSync('git', ['ls-files', '--cached', '-z'], { cwd: base, encoding: 'utf8' });
-  if (result.status !== 0) problems.push('Unable to inspect Git index');
-  else { git = 'index inspected'; for (const path of result.stdout.split('\0').filter(Boolean)) if (!allowed.has(path)) problems.push(`Unapproved tracked file: ${path}`); }
+  // Source filtering can leave an empty .git directory on Vercel. A parent
+  // repository must never substitute for this publication checkout.
+  const checkout = spawnSync('git', ['rev-parse', '--show-toplevel'], { cwd: base, encoding: 'utf8' });
+  const ownCheckout = checkout.status === 0 && resolve(checkout.stdout.trim()) === resolve(base);
+  if (!ownCheckout) {
+   if (process.env.VERCEL === '1' && ['preview', 'production'].includes(process.env.VERCEL_ENV)) git = 'Vercel metadata stripped; filesystem and manifest checks active';
+   else problems.push('Unable to validate local Git checkout');
+  } else {
+   const result = spawnSync('git', ['ls-files', '--cached', '-z'], { cwd: base, encoding: 'utf8' });
+   if (result.status !== 0) problems.push('Unable to inspect Git index');
+   else {
+    git = 'index inspected';
+    const tracked = result.stdout.split('\0').filter(Boolean);
+    for (const path of tracked) if (!allowed.has(path)) problems.push(`Unapproved tracked file: ${path}`);
+    for (const path of files) if (!tracked.includes(path)) problems.push(`Publication file not tracked: ${path}`);
+   }
+  }
  }
  return { files: files.length, git, problems };
 }
